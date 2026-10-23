@@ -31,6 +31,11 @@ jobs:
           ninja --version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: 构建 host 版 libromfs-generator
+        # iOS 下资源被强制打进二进制（USE_LIBROMFS=ON），需要一个能在 macOS 上跑的
+        # 资源转换器。上游提供了脚本，产物落在仓库根目录的 libromfs-generator。
+        run: bash build_libromfs_generator.sh
+
       - name: 配置（iOS 14.0 / arm64）
         run: |
           set -x
