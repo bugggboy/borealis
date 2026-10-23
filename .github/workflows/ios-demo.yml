@@ -64,8 +64,6 @@ jobs:
           BIN=$(find "$APP" -maxdepth 1 -type f -perm +111 | head -1)
           echo "BIN=$BIN"
           vtool -show-build "$BIN" || true
-          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist" || true
-          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist" || true
 
           # 硬性门槛：minos 必须是 14.x，任何被抬到 15.0 的情况都算失败
           MINOS=$(vtool -show-build "$BIN" | awk '/minos/{print $2; exit}')
@@ -74,6 +72,34 @@ jobs:
             14.*) echo "::notice::部署目标 14.0 生效，iOS 14 可用" ;;
             *)    echo "::error::minos 是 $MINOS，不是 14.x —— 部署目标被 SDK 抬高了，需要换工具链或降级 Xcode"; exit 1 ;;
           esac
+
+      - name: 补齐 Info.plist（iOS 装机必需字段）
+        if: always()
+        run: |
+          APP=$(find build-ios -name "*.app" -maxdepth 4 | head -1)
+          [ -z "$APP" ] && exit 0
+          P="$APP/Info.plist"
+          echo "===== 原始 Info.plist ====="
+          plutil -p "$P" || true
+
+          MINOS=$(vtool -show-build "$APP/$(basename "$APP" .app)" 2>/dev/null | awk '/minos/{print $2; exit}')
+          MINOS=${MINOS:-14.0}
+
+          # 缺 MinimumOSVersion 时 SpringBoard / installd 会拿不到系统版本下限
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$P" >/dev/null 2>&1 \
+            || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $MINOS" "$P"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleSupportedPlatforms" "$P" >/dev/null 2>&1 \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms array" "$P" \
+               && /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms:0 string iPhoneOS" "$P"
+          /usr/libexec/PlistBuddy -c "Print :UILaunchScreen" "$P" >/dev/null 2>&1 \
+            || /usr/libexec/PlistBuddy -c "Add :UILaunchScreen dict" "$P"
+          /usr/libexec/PlistBuddy -c "Print :UIDeviceFamily" "$P" >/dev/null 2>&1 \
+            || { /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily array" "$P"; \
+                 /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:0 integer 1" "$P"; }
+
+          echo "===== 补齐后 Info.plist ====="
+          plutil -p "$P"
+          plutil -lint "$P"
 
       - name: 打未签名 IPA
         if: always()
