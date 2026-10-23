@@ -49,7 +49,7 @@ jobs:
           set -o pipefail
           cmake --build build-ios -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -120
 
-      - name: 校验产物与 minos
+      - name: 校验产物与 minos（硬性要求 14.0）
         if: always()
         run: |
           APP=$(find build-ios -name "*.app" -maxdepth 4 | head -1)
@@ -61,6 +61,14 @@ jobs:
           vtool -show-build "$BIN" || true
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist" || true
+
+          # 硬性门槛：minos 必须是 14.x，任何被抬到 15.0 的情况都算失败
+          MINOS=$(vtool -show-build "$BIN" | awk '/minos/{print $2; exit}')
+          echo "解析到 minos=$MINOS"
+          case "$MINOS" in
+            14.*) echo "::notice::部署目标 14.0 生效，iOS 14 可用" ;;
+            *)    echo "::error::minos 是 $MINOS，不是 14.x —— 部署目标被 SDK 抬高了，需要换工具链或降级 Xcode"; exit 1 ;;
+          esac
 
       - name: 打未签名 IPA
         if: always()
