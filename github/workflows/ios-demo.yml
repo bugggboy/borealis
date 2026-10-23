@@ -1,0 +1,82 @@
+name: iOS · borealis demo (M0)
+
+# M0：验证 borealis 的 iOS 构建链能不能在 CI 上跑通
+# 目标不是出成品，而是确认三件事：
+#   1. ios.toolchain.cmake（leetal/ios-cmake）+ SDL2 静态库能交叉编译到 arm64-ios
+#   2. PLATFORM_IOS=ON 时 ios_bundle() 能产出可用的 .app
+#   3. 部署目标 14.0 是否真的落到 Mach-O 的 minos（Xcode 26 官方只支持 15+）
+
+on:
+  push:
+    paths:
+      - ".github/workflows/ios-demo.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: 环境信息
+        run: |
+          xcodebuild -version
+          cmake --version | head -1
+          ninja --version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: 配置（iOS 14.0 / arm64）
+        run: |
+          set -x
+          cmake -S . -B build-ios -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/library/cmake/ios.toolchain.cmake" \
+            -DPLATFORM=OS64 \
+            -DARCHS=arm64 \
+            -DDEPLOYMENT_TARGET=14.0 \
+            -DPLATFORM_IOS=ON \
+            -DIOS_GUI_IDENTIFIER=com.borealis.demo \
+            -DIOS_CODE_SIGN_IDENTITY=""
+
+      - name: 编译
+        run: |
+          set -o pipefail
+          cmake --build build-ios -j"$(sysctl -n hw.ncpu)" 2>&1 | tail -120
+
+      - name: 校验产物与 minos
+        if: always()
+        run: |
+          APP=$(find build-ios -name "*.app" -maxdepth 4 | head -1)
+          echo "APP=$APP"
+          if [ -z "$APP" ]; then echo "::error::没有产出 .app"; find build-ios -maxdepth 2 -type d | head -20; exit 1; fi
+          ls -la "$APP"
+          BIN=$(find "$APP" -maxdepth 1 -type f -perm +111 | head -1)
+          echo "BIN=$BIN"
+          vtool -show-build "$BIN" || true
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist" || true
+
+      - name: 打未签名 IPA
+        if: always()
+        run: |
+          APP=$(find build-ios -name "*.app" -maxdepth 4 | head -1)
+          [ -z "$APP" ] && exit 0
+          rm -rf out && mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent out/Payload borealis-demo-unsigned.ipa
+          ls -lh borealis-demo-unsigned.ipa
+
+      - name: 上传产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: borealis-demo-ios
+          path: borealis-demo-unsigned.ipa
+          if-no-files-found: ignore
+          retention-days: 14
