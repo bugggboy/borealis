@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # 需要把 IPA 挂到 Release，供手机直接下载
 
 jobs:
   build:
@@ -119,3 +119,16 @@ jobs:
           path: borealis-demo-unsigned.ipa
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: 挂到 Release（手机 Safari 直链下载，免登录）
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [ -f borealis-demo-unsigned.ipa ] || exit 0
+          TAG=borealis-demo-m0
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "M0 · borealis demo (iOS 14.0)" \
+                 --notes "iOS 14.0 起的未签名 demo 包，用 TrollStore 安装。用于验证工具链与图形栈，不是 wiliwili。" \
+                 --latest
+          gh release upload "$TAG" borealis-demo-unsigned.ipa --clobber
