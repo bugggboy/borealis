@@ -412,7 +412,13 @@ SDLInputManager::SDLInputManager(SDL_Window* window)
         brls::fatal("Couldn't initialize joystick: " + std::string(SDL_GetError()));
     }
 
+    // Android 上触摸走 SDL 的 mouse 合成路径（和桌面鼠标同一条链路，命中/点击都已验证），
+    // 原生 finger 路径在 Android 的坐标空间下 hitTest 命中的视图没有 action，点击会失效。
+#if defined(__ANDROID__)
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
+#else
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+#endif
 
     int controllersCount = SDL_NumJoysticks();
     brls::Logger::info("joystick num: {}", controllersCount);
@@ -541,6 +547,10 @@ bool SDLInputManager::getKeyboardKeyState(BrlsKeyboardScancode key)
 
 void SDLInputManager::updateTouchStates(std::vector<RawTouchState>* states)
 {
+#if defined(__ANDROID__)
+    // Android 由 SDL 合成 mouse 事件，这里不再重复上报 finger，避免一条触摸触发两次点击
+    return;
+#endif
     int devices = SDL_GetNumTouchDevices();
     if (devices == 0)
         return;
