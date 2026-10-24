@@ -122,6 +122,14 @@ void loadTranslations()
 
 namespace internal
 {
+    // 非抛异常版本的查找：类型不对/不存在都返回 nullptr
+    static const nlohmann::json* lookupString(const nlohmann::json& doc, const nlohmann::json::json_pointer& ptr)
+    {
+        if (!doc.is_object() || !doc.contains(ptr)) return nullptr;
+        const nlohmann::json& value = doc.at(ptr);
+        return value.is_string() ? &value : nullptr;
+    }
+
     std::string getRawStr(std::string stringName)
     {
         nlohmann::json::json_pointer pointer;
@@ -136,23 +144,13 @@ namespace internal
             return stringName;
         }
 
-        // First look for translated string in current locale
-        try
-        {
-            return currentLocale[pointer].get<std::string>();
-        }
-        catch (...)
-        {
-        }
-
-        // Then look for default locale
-        try
-        {
-            return defaultLocale[pointer].get<std::string>();
-        }
-        catch (...)
-        {
-        }
+        // 这里刻意不用异常：Android 上从本线程抛出 C++ 异常会走 libc++abi 的 unwinder，
+        // 实测在 _Unwind_RaiseException_Phase2 里直接 SIGSEGV（即使外层 catch(...) 也拦不住）。
+        // 缺失的 key 本身是正常情况（比如 currentLocale 还没加载），不应该用异常来表达。
+        if (const nlohmann::json* found = lookupString(currentLocale, pointer))
+            return *found;
+        if (const nlohmann::json* found = lookupString(defaultLocale, pointer))
+            return *found;
 
         // Fallback to returning the string name
         return stringName;
