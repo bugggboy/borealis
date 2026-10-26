@@ -198,7 +198,13 @@ SDLVideoContext::SDLVideoContext(std::string windowTitle, uint32_t windowWidth, 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+#if defined(__ANDROID__)
+    // Android 零拷贝直渲染：SDLSurface 透明，让下层的视频 SurfaceView 透出来。
+    // 需要 GL 上下文带 alpha 通道，配合 clear 为透明背景。
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+#else
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
     SDL_GL_SetAttribute(SDL_GL_RETAINED_BACKING, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
@@ -372,14 +378,57 @@ void SDLVideoContext::setSwapInterval(int interval)
 #endif
 }
 
+#if defined(__ANDROID__)
+#include <atomic>
+#include <chrono>
+// 最近一次视频窗口绘制的时间（毫秒）。Android 零拷贝视频层是全屏 Surface，
+// 只有播放页需要它可见 + SDLSurface 透明；其它页面必须隐藏视频层、恢复浅色不透明背景，
+// 否则首页会残留视频画面、整个 UI 变暗。用「超时判断」自动区分：超过 400ms 没绘制
+// 视频窗口就认为不在播放页。
+static std::atomic<long long> g_lastVideoDrawMs{0};
+
+extern "C" void wili_markVideoDraw() {
+    g_lastVideoDrawMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count());
+}
+
+// 供 application.cpp 判断 UI 节流是否该生效（视频窗口最近是否还在绘制）
+extern "C" long long wili_lastVideoDrawMs() {
+    return g_lastVideoDrawMs.load();
+}
+
+static bool androidVideoActive() {
+    long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    long long last = g_lastVideoDrawMs.load();
+    return last > 0 && (now - last) < 400;
+}
+#endif
+
 void SDLVideoContext::clear(NVGcolor color)
 {
 #ifdef BOREALIS_USE_OPENGL
+#if defined(__ANDROID__)
+    // 根据是否正在显示视频窗口切换：播放页透明（露出下层视频），其它页面用主题色
+    // 不透明清屏——不透明背景会自然盖住底层的视频 SurfaceView，不会残留画面。
+    bool active = androidVideoActive();
+    // 关键：必须显式开 glColorMask 的 alpha 位——nanovg 渲染会把 alpha 写入关掉，
+    // 导致 clear 的 alpha=0 被当成不透明，整层盖住视频（表现为黑屏/纯色屏）。
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    if (active) {
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    } else {
+        glClearColor(color.r, color.g, color.b, color.a);
+    }
+#else
     glClearColor(
         color.r,
         color.g,
         color.b,
         color.a);
+#endif
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 #elif defined(BOREALIS_USE_D3D11)

@@ -265,6 +265,14 @@ class Application
     static bool getAutomaticDeactivation();
     static bool hasActiveEvent();
     static void setActiveEvent(bool value);
+
+    /**
+     * 本帧是否有「真实」输入事件。
+     * 注意与 hasActiveEvent() 的区别：hasActiveEvent() 在 deactivatedBehavior=false
+     * （默认）时恒为 true（含 SDL poll 哨兵），不能用来判断要不要阻塞主循环；
+     * 本方法返回的 activeEvent 每帧重置，只由真实 SDL 输入事件置位。
+     */
+    static bool hasFrameInput();
     static void setDeactivatedTime(int millisecond);
     static void setDeactivatedFPS(int value);
     static int getDeactivatedFPS();
@@ -412,6 +420,19 @@ class Application
     inline static Time lastActiveTime      = 0;
     inline static int deactivatedFPS       = 5; // FPS 5
     inline static int deactivatedTime      = 5000000; // 5s
+
+    /**
+     * UI 重绘节流开关。
+     * 默认开启时：无输入事件的帧最多 30fps 重绘，有输入立即重绘。
+     * 目的：borealis 的 hasActiveEvent() 在 deactivatedBehavior=false（默认）时恒为 true，
+     * 导致主循环从不等待、每帧全速全屏重绘 1080p，在老 GPU（Mali-450）上吃满带宽，
+     * 按键要等当前帧画完才响应 → 明显操作延迟。节流只影响静止帧，用户操作仍即时响应。
+     */
+#if defined(__ANDROID__)
+    inline static bool throttleUI = true;
+#else
+    inline static bool throttleUI = false;
+#endif
 
     inline static View* repetitionOldFocus = nullptr;
 

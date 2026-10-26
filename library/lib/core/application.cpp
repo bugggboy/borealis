@@ -20,6 +20,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <chrono>
+#include <thread>
 #include <yoga/YGNode.h>
 #include <yoga/event/event.h>
 
@@ -663,6 +665,11 @@ bool Application::hasActiveEvent()
 #endif
 }
 
+bool Application::hasFrameInput()
+{
+    return Application::activeEvent;
+}
+
 void Application::setActiveEvent(bool value)
 {
 #ifndef __SWITCH__
@@ -745,6 +752,31 @@ bool Application::handleAction(const ActionType type, const int button, const bo
 
 void Application::frame()
 {
+#if defined(__ANDROID__)
+    // 关键性能优化：borealis 的 hasActiveEvent() 在默认配置下恒为 true，主循环从不
+    // 等待，每帧全速全屏重绘 1080p。Mali-450 等老 GPU 带宽有限，按键要等当前帧画完
+    // 才响应，表现为明显操作延迟。这里对「无输入事件」的静止帧做保底降频：
+    //   - 有输入事件（用户操作）→ 立即重绘，保证响应手感
+    //   - 静止 → 最多 100ms 重绘一次（10fps），足够应付加载动画，又大幅省 CPU/GPU
+    // 视频由 mpv 独立渲染到 SurfaceView，不受这里的帧率影响。
+    // 注意：有 tick 动画在跑时不节流（否则页面切换/过渡动画会掉到 10fps）
+    if (Application::throttleUI && !Application::activeEvent && Ticking::runningTickings.empty())
+    {
+        static long long s_lastRedrawMs = 0;
+        auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+        if (s_lastRedrawMs != 0 && nowMs - s_lastRedrawMs < 50)
+        {
+            // 跳过本帧重绘。必须睡一下：不调 endFrame() 就没有 vsync 阻塞，
+            // 主循环会全速空转把 CPU 占满（实测静止时仍占 32%），反而拖慢响应。
+            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            return;
+        }
+        s_lastRedrawMs = nowMs;
+    }
+#endif
+
     VideoContext* videoContext = Application::platform->getVideoContext();
 
     // Frame context

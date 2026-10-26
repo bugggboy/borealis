@@ -20,8 +20,15 @@
 #include <borealis/core/application.hpp>
 #include <borealis/core/i18n.hpp>
 #include <borealis/core/logger.hpp>
+#include <borealis/core/time.hpp>
 #include <borealis/platforms/sdl/sdl_platform.hpp>
 #include <unordered_map>
+#include <chrono>
+
+#if defined(__ANDROID__)
+// 由 sdl_video.cpp 提供：最近一次视频窗口绘制的时间戳（毫秒）
+extern "C" long long wili_lastVideoDrawMs();
+#endif
 
 #if defined(IOS) || defined(TVOS)
 #include <sys/utsname.h>
@@ -244,19 +251,46 @@ bool SDLPlatform::mainLoopIteration()
     bool hasEvent = false;
     while (SDL_PollEvent(&event))
     {
+        // SDL_POLLSENTINEL 只是「本轮轮询结束」的标记，每轮 poll 都会有，
+        // 不是真实输入。之前它也会走 processEvent 里的 setActiveEvent(true)，
+        // 导致 activeEvent 恒为 true、主循环从不等待、SDLThread 吃满多核
+        // （实测 381%），按键响应被严重拖慢。这里直接结束本轮 poll。
+        if (event.type == SDL_POLLSENTINEL) break;
         if (!processEvent(&event))
         {
             return false;
         }
         hasEvent = true;
     }
-    if (!hasEvent && !Application::hasActiveEvent())
+
+    // 无真实输入、无动画、也没有视频窗口在绘制时，阻塞等待事件，避免主循环空转。
+    // （视频播放中不等待：mpv 的属性/事件需要及时被 eventMainLoop 消费）
+    if (!hasEvent && Ticking::runningTickings.empty())
     {
-        if (SDL_WaitEventTimeout(&event, (int)(brls::Application::getDeactivatedFrameTime() * 1000))
+#if defined(__ANDROID__)
+        bool canWait = !Application::hasFrameInput();
+        if (canWait)
+        {
+            auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+            long long last = wili_lastVideoDrawMs();
+            if (last > 0 && nowMs - last < 500) canWait = false; // 视频窗口活跃，不等待
+        }
+        if (canWait
+            && SDL_WaitEventTimeout(&event, 50)   // 50ms≈20fps 轮询：足够应付高亮渐变等慢速动效，CPU 开销极低
+            && event.type != SDL_POLLSENTINEL && !processEvent(&event))
+        {
+            return false;
+        }
+#else
+        if (!Application::hasActiveEvent()
+            && SDL_WaitEventTimeout(&event, (int)(brls::Application::getDeactivatedFrameTime() * 1000))
             && !processEvent(&event))
         {
             return false;
         }
+#endif
     }
     return true;
 }
